@@ -216,16 +216,29 @@ function setWX(i) { wxI = i; try { localStorage.setItem('skylark_wx', String(i))
 const WIND_DIR = 75 * RAD; let windV = [0, 0, 0], windSpd = 0, windFrom = 0;
 function windAt(t) {
   const W0 = WX[wxI], g = 1 + 0.3 * Math.sin(t * 0.53) + 0.2 * Math.sin(t * 1.37 + 2) + (W0.rain > 1 ? 0.25 * Math.sin(t * 2.9) : 0);
-  windSpd = Math.max(0, W0.wind * g); const a = WIND_DIR + 0.25 * Math.sin(t * 0.11);
+  windSpd = Math.max(0, W0.wind * D.wind * g); const a = WIND_DIR + 0.25 * Math.sin(t * 0.11);
   windV = [Math.sin(a) * windSpd, 0, Math.cos(a) * windSpd]; windFrom = ((a * DEG + 180) % 360 + 360) % 360;
 }
-let ghost = null, ghostOn = true;
-try { ghost = JSON.parse(localStorage.getItem('skylark_ghost') || 'null'); ghostOn = localStorage.getItem('skylark_ghostOn') !== '0'; } catch (e) { ghost = null; }
+const DIFF = [
+  { name: 'EASY', time: 270, bonus: 15, ringR: 36, bonusR: 24, auth: 0.85, wind: 0.55, turb: 0.5, hard: -9.5, gold: 10, mult: 0.8, col: '#7dffa8' },
+  { name: 'NORMAL', time: 210, bonus: 12, ringR: 28, bonusR: 19, auth: 1, wind: 1, turb: 1, hard: -7.5, gold: 8, mult: 1, col: '#ffd27a' },
+  { name: 'HARD', time: 160, bonus: 9, ringR: 21, bonusR: 15, auth: 1.12, wind: 1.45, turb: 1.5, hard: -6, gold: 6, mult: 1.35, col: '#ff7a6a' },
+];
+let diffI = 1, routeRandom = false, routeSeed = 0;
+try { diffI = clamp(+(localStorage.getItem('skylark_diff') ?? 1) || 0, 0, 2); routeRandom = localStorage.getItem('skylark_route') === 'R'; } catch (e) { }
+let D = DIFF[diffI];
+const bestKey = () => 'skylark_best_' + D.name;
+function setDiff(i) { diffI = i; D = DIFF[i]; try { localStorage.setItem('skylark_diff', String(i)); } catch (e) { } const b = $('dfb'); if (b) b.textContent = 'DIFFICULTY: ' + D.name; try { loadBest(); if (state === 'title') { buildRoute(); pickGhost(); } } catch (e) { } }
+function setRoute(r) { routeRandom = r; try { localStorage.setItem('skylark_route', r ? 'R' : 'C'); } catch (e) { } const b = $('rtb'); if (b) b.textContent = 'ROUTE: ' + (r ? 'RANDOM' : 'CLASSIC'); }
+let ghosts = {}, ghost = null, ghostOn = true;
+try { ghosts = JSON.parse(localStorage.getItem('skylark_ghosts') || '{}') || {}; ghostOn = localStorage.getItem('skylark_ghostOn') !== '0'; } catch (e) { ghosts = {}; }
+const ghostKey = () => routeRandom ? null : D.name + '-CLASSIC2';
+function pickGhost() { const k = ghostKey(); ghost = k && ghosts[k] ? ghosts[k] : null; }
 function setGhostOn(v) { ghostOn = v; try { localStorage.setItem('skylark_ghostOn', v ? '1' : '0'); } catch (e) { } const b = $('ghb'); if (b) b.textContent = 'GHOST: ' + (v ? 'ON' : 'OFF'); }
 let todI = 0; try { todI = (+localStorage.getItem('skylark_tod') || 0) % 3; } catch (e) { }
 let L = TOD[todI];
 function setTOD(i) { todI = i; L = TOD[i]; try { localStorage.setItem('skylark_tod', String(i)); } catch (e) { } const b = $('todb'); if (b) b.textContent = 'TIME: ' + L.name; }
-setTOD(todI); setWX(wxI); setGhostOn(ghostOn);
+setTOD(todI); setWX(wxI); setGhostOn(ghostOn); setDiff(diffI); setRoute(routeRandom); pickGhost();
 let E = L, flashV = 0, boltT = 9, nextBolt = 4, boltPts = null, FDT = 0.016;
 const drops = [];
 function envNow() {
@@ -452,28 +465,71 @@ const PARKED = [
 ];
 
 // rings
-const NR = 12, RING_R = 28;
-const rings = [];
+const NR = 12, RING_MESH_R = 28, NB = 4;
+const rings = [], bonusRings = [];
 {
-  const tm = new MB(), R = RING_R, r = 2.6, S1 = 40, S2 = 8;
+  const tm = new MB(), R = RING_MESH_R, r = 2.6, S1 = 40, S2 = 8;
   for (let i = 0; i <= S1; i++) for (let j = 0; j <= S2; j++) {
     const th = i / S1 * Math.PI * 2, ph = j / S2 * Math.PI * 2, cr = R + r * Math.cos(ph);
     tm.vert([cr * Math.cos(th), cr * Math.sin(th), r * Math.sin(ph)], [Math.cos(ph) * Math.cos(th), Math.cos(ph) * Math.sin(th), Math.sin(ph)], [1, 1, 1]);
   }
   for (let i = 0; i < S1; i++) for (let j = 0; j < S2; j++) { const a = i * (S2 + 1) + j, b = a + S2 + 1; tm.i.push(a, b, a + 1, a + 1, b, b + 1); }
   M.ring = tm.build();
-  for (let i = 0; i < NR; i++) {
-    const a = 0.22 + i / NR * Math.PI * 2 * 0.94, R2 = 2100 + 650 * Math.sin(a * 3 + 1);
+}
+
+function maxNear(x, z, r) { let m = -1e9; for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) m = Math.max(m, groundH(x + dx * r, z + dz * r)); return m; }
+function seaSpot(a, r0) {
+  for (let R2 = r0; R2 < 6200; R2 += 60) {
     const x = Math.sin(a) * R2, z = Math.cos(a) * R2;
-    let mh = 0; for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) mh = Math.max(mh, groundH(x + dx * 160, z + dz * 160));
-    rings.push({ c: [x, mh + 115 + 65 * Math.sin(i * 1.9), z] });
+    if (maxNear(x, z, 140) < -6 && maxNear(x, z, 320) < 2) return [x, z, R2];
   }
+  return null;
+}
+function ringBasis(c, n, R) { const rr = V.norm(V.cross([0, 1, 0], n)), uu = V.cross(n, rr), k = R / RING_MESH_R; return basisM(V.mul(rr, k), V.mul(uu, k), V.mul(n, k), c); }
+const SEA_IDX = [2, 6, 10];
+function buildRoute() {
+  const pts = [], valley = [];
+  if (!routeRandom) {
+    for (let i = 0; i < NR; i++) {
+      const a = 0.22 + i / NR * Math.PI * 2 * 0.94, R2 = 2100 + 650 * Math.sin(a * 3 + 1), x = Math.sin(a) * R2, z = Math.cos(a) * R2;
+      const sp = SEA_IDX.includes(i) ? seaSpot(a, R2 + 200) : null;
+      if (sp) { pts.push([sp[0], D.ringR + 14 + 8 * Math.sin(i * 2.3), sp[1]]); valley.push('sea'); }
+      else { pts.push([x, Math.max(0, maxNear(x, z, 160)) + 115 + 65 * Math.sin(i * 1.9), z]); valley.push(false); }
+    }
+  } else {
+    const rr = rng(routeSeed), dir = rr() < 0.5 ? 1 : -1, a0 = rr() * Math.PI * 2;
+    for (let i = 0; i < NR; i++) {
+      const aC = a0 + dir * (i + 0.5) / NR * Math.PI * 2 * 0.92, wantValley = i % 3 === 1;
+      if (i % 4 === 3) { const sp = seaSpot(aC + (rr() - 0.5) * 0.25, 2200 + rr() * 600); if (sp) { pts.push([sp[0], D.ringR + 12 + rr() * 20, sp[1]]); valley.push('sea'); continue; } }
+      let bestP = null, bestS = -1e9;
+      for (let k = 0; k < (wantValley ? 40 : 6); k++) {
+        const a = aC + (rr() - 0.5) * 0.3, R2 = 1300 + rr() * 2200, x = Math.sin(a) * R2, z = Math.cos(a) * R2, h = groundH(x, z);
+        if (Math.abs(x) < 300 && Math.abs(z) < RW.hz + 500) continue;
+        let sc = rr();
+        if (wantValley) { if (h < 15) continue; let ring = 0; for (let q = 0; q < 8; q++) { const b = q / 8 * 6.283; ring += groundH(x + Math.cos(b) * 380, z + Math.sin(b) * 380); } sc = ring / 8 - h; }
+        if (sc > bestS) { bestS = sc; bestP = [x, z, h]; }
+      }
+      if (!bestP) { const x = Math.sin(aC) * 2200, z = Math.cos(aC) * 2200; bestP = [x, z, groundH(x, z)]; }
+      const [x, z] = bestP, isV = wantValley && bestS > 60 ? true : false, floor = Math.max(maxNear(x, z, 70), 0);
+      pts.push([x, isV ? floor + D.ringR + 38 + rr() * 25 : Math.max(floor, maxNear(x, z, 180)) + 90 + rr() * 110, z]); valley.push(isV);
+    }
+  }
+  rings.length = 0;
   for (let i = 0; i < NR; i++) {
-    const prev = i ? rings[i - 1].c : [0, 0, RW.hz], next = i < NR - 1 ? rings[i + 1].c : [0, 0, -RW.hz - 1500];
-    const n = V.norm([next[0] - prev[0], 0, next[2] - prev[2]]), rr = V.norm(V.cross([0, 1, 0], n)), uu = V.cross(n, rr);
-    rings[i].n = n; rings[i].M = basisM(rr, uu, n, rings[i].c);
+    const prev = i ? pts[i - 1] : [0, 0, RW.hz], next = i < NR - 1 ? pts[i + 1] : [0, 0, -RW.hz - 1500];
+    const n = V.norm([next[0] - prev[0], 0, next[2] - prev[2]]);
+    rings.push({ c: pts[i], n, M: ringBasis(pts[i], n, D.ringR), valley: valley[i] });
+  }
+  bonusRings.length = 0;
+  const br = rng(routeRandom ? routeSeed ^ 0x5bd1 : 4242);
+  for (const i of [1, 4, 7, 9]) {
+    const a = rings[i].c, b = rings[i + 1].c, d = V.norm([b[0] - a[0], 0, b[2] - a[2]]), side = V.cross([0, 1, 0], d), sg = br() < 0.5 ? -1 : 1;
+    const m = V.add(V.lerp(a, b, 0.45 + br() * 0.1), V.mul(side, sg * (200 + br() * 160)));
+    m[1] = Math.max((a[1] + b[1]) / 2 + 40 + br() * 90, Math.max(maxNear(m[0], m[2], 60), 0) + D.bonusR + 30);
+    bonusRings.push({ c: m, n: d, M: ringBasis(m, d, D.bonusR), got: false });
   }
 }
+buildRoute();
 
 // minimap
 const MR = 6000, MS = 160;
@@ -539,45 +595,52 @@ function audioUpdate() {
 
 // ---------------------------------------------------------------- game state
 const P = { pos: [0, 0, 0], f: [0, 0, 1], u: [0, 1, 0], r: [1, 0, 0], spd: 0, thr: 0, ground: true, alive: true, next: 0, vs: 0, cp: 0, cr: 0, cy: 0, touchVS: 0 };
-const START_TIME = 210, RING_BONUS = 12;
+let countdown = 0, cdLast = 0, accScore = 0, bonusScore = 0, perfects = 0, greats = 0, bonusGot = 0;
 const trail = [], TRAIL_LIFE = 7; let smokeOn = true, lastEmit = null;
-let state = 'title', timeLeft = START_TIME, camMode = 0, crashT = 0, crashPos = null, crashWhy = '', endShown = false, flightT = 0;
+let state = 'title', timeLeft = 210, camMode = 0, crashT = 0, crashPos = null, crashWhy = '', endShown = false, flightT = 0;
 let msg = '', msgT = 0, beepT = 0, propA = 0, chase = [0, 0, 0];
 const CAM = { e: [0, 50, -100], c: [0, 0, 0], up: [0, 1, 0], r: [1, 0, 0], u: [0, 1, 0], f: [0, 0, 1] };
 let VPm = I4;
-let best = 0; try { best = +localStorage.getItem('skylark_best') || 0; } catch (e) { }
-const showBest = () => { const b = $('best'); if (b) b.textContent = (best ? 'BEST SCORE  ' + best : '') + (ghost ? '  ·  GHOST READY' : ''); };
+let best = 0;
+function loadBest() { try { best = +localStorage.getItem(bestKey()) || 0; } catch (e) { best = 0; } if (typeof showBest === 'function') showBest(); }
+loadBest();
+function showBest() { const b = $('best'); if (b) b.textContent = (best ? `BEST ${D.name}  ${best}` : '') + (ghost ? '  ·  GHOST READY' : (routeRandom ? '  ·  GHOST: CLASSIC ROUTE ONLY' : '')); }
 const rec = [], ringTimes = []; let recAcc = 0, newGhost = false, lastKind = 'win';
 showBest();
 
 function reset() {
   Object.assign(P, { pos: [0, RW.y + GEAR, -RW.hz + 60], f: [0, 0, 1], u: [0, 1, 0], r: [1, 0, 0], spd: 0, thr: 0, ground: true, alive: true, next: 0, vs: 0, cp: 0, cr: 0, cy: 0, touchVS: 0 });
+  for (const B of bonusRings) B.got = false;
   trail.length = 0; lastEmit = null; rec.length = 0; ringTimes.length = 0; recAcc = 0; newGhost = false;
-  timeLeft = START_TIME; crashT = 0; endShown = false; flightT = 0; msg = ''; msgT = 0;
+  timeLeft = D.time; countdown = 3.2; cdLast = 4; accScore = 0; bonusScore = 0; perfects = 0; greats = 0; bonusGot = 0;
+  crashT = 0; endShown = false; flightT = 0; msg = ''; msgT = 0;
   chase = V.add(P.pos, [0, 7.5, -24]);
 }
 reset();
 function flash(s, t = 2.2) { msg = s; msgT = t; }
-function startGame() { initAudio(); reset(); state = 'play'; ov.classList.add('hide'); flash('THROTTLE UP — TAKE OFF', 3); }
+function startGame() { initAudio(); if (routeRandom) routeSeed = (Math.random() * 2 ** 31) | 0; buildRoute(); pickGhost(); reset(); state = 'play'; ov.classList.add('hide'); }
 function togglePause() {
   if (state === 'play') { state = 'paused'; if (document.exitPointerLock) document.exitPointerLock(); ovc.innerHTML = '<h1>PAUSED</h1><h2>DEADLINE RUN</h2><button class="go" data-act="resume">RESUME ▸</button>'; ov.classList.remove('hide'); }
   else if (state === 'paused') { state = 'play'; ov.classList.add('hide'); }
 }
-function score(win) { return P.next * 1000 + (win ? 2000 + Math.round(timeLeft) * 50 + Math.round(clamp(1 + P.touchVS / 6, 0, 1) * 1500) : 0); }
+function score(win) { return Math.round((P.next * 1000 + accScore + bonusScore + (win ? 2000 + Math.round(timeLeft) * 50 + Math.round(clamp(1 + P.touchVS / 6, 0, 1) * 1500) : 0)) * D.mult); }
 function showEnd(kind) {
   lastKind = kind;
   if (document.exitPointerLock) document.exitPointerLock();
   const win = kind === 'win', sc = score(win);
-  if (sc > best) { best = sc; try { localStorage.setItem('skylark_best', String(best)); } catch (e) { } }
+  const isBest = sc > best; if (isBest) { best = sc; try { localStorage.setItem(bestKey(), String(best)); } catch (e) { } }
   const title = win ? 'WHEELS DOWN' : kind === 'timeout' ? 'DEADLINE MISSED' : 'CRASHED';
   const sub = win ? 'MISSION COMPLETE' : kind === 'timeout' ? 'THE CLOCK RAN OUT' : crashWhy.toUpperCase();
   ovc.innerHTML = `<h1>${title}</h1><h2>${sub}</h2><div class="stats">
+    <span>Difficulty · route</span><span style="color:${D.col}">${D.name} · ${routeRandom ? 'RANDOM' : 'CLASSIC'}</span>
     <span>Rings threaded</span><span>${P.next} / ${NR}</span>
+    <span>Perfect · great passes</span><span>${perfects} · ${greats}</span>
+    <span>Gold bonus rings</span><span>${bonusGot} / ${NB}</span>
     <span>Time left</span><span>${fmtT(timeLeft)}</span>
     ${win ? `<span>Touchdown sink rate</span><span>${Math.round(-P.touchVS * 196.85)} fpm</span>` : ''}
     <span>Flight time</span><span>${fmtT(flightT)}</span>
     <span>Score</span><span>${sc}</span></div>
-    <button class="go" data-act="go">FLY AGAIN ▸</button>${rec.length > 30 ? '<button class="go alt" data-act="replay">▶ REPLAY</button>' : ''}${newGhost ? '<div class="best" style="color:#9fdcff">NEW GHOST SAVED — RACE IT NEXT RUN</div>' : ''}<div class="best">BEST SCORE  ${best}</div>`;
+    <button class="go" data-act="go">FLY AGAIN ▸</button>${rec.length > 30 ? '<button class="go alt" data-act="replay">▶ REPLAY</button>' : ''}${newGhost ? '<div class="best" style="color:#9fdcff">NEW GHOST SAVED — RACE IT NEXT RUN</div>' : ''}<div class="best">${isBest ? 'NEW BEST · ' : ''}BEST ${D.name}  ${best}</div>`;
   ov.classList.remove('hide');
 }
 function endGame(kind) { state = 'end'; P.thr = 0; recFrame(); if (kind === 'win') newGhost = saveGhost(score(true)); showEnd(kind); }
@@ -587,11 +650,11 @@ function crash(why) {
 }
 function recFrame() { if (rec.length < 20000) rec.push([P.pos[0], P.pos[1], P.pos[2], P.f[0], P.f[1], P.f[2], P.u[0], P.u[1], P.u[2], P.thr, P.spd, P.next, P.ground ? 1 : 0, flightT]); }
 function saveGhost(sc) {
-  if (rec.length < 60 || (ghost && ghost.score >= sc)) return false;
+  const gk = ghostKey(); if (!gk || rec.length < 60 || (ghost && ghost.score >= sc)) return false;
   const fr = [], n = Math.floor(rec[rec.length - 1][13] * 10); let j = 0;
   for (let k = 0; k <= n; k++) { const t = k / 10; while (j < rec.length - 2 && rec[j + 1][13] < t) j++; const a = rec[j]; for (let q = 0; q < 9; q++) fr.push(+a[q].toFixed(q < 3 ? 1 : 3)); }
-  ghost = { score: sc, fr, rings: ringTimes.slice() };
-  try { localStorage.setItem('skylark_ghost', JSON.stringify(ghost)); } catch (e) { }
+  ghost = { score: sc, fr, rings: ringTimes.slice() }; ghosts[gk] = ghost;
+  try { localStorage.setItem('skylark_ghosts', JSON.stringify(ghosts)); } catch (e) { }
   return true;
 }
 function ghostPose(t) {
@@ -654,7 +717,7 @@ function onKey(c) {
   if (c === 'KeyT') setTOD((todI + 1) % 3);
   if (c === 'KeyX') { smokeOn = !smokeOn; flash(smokeOn ? 'SMOKE ON' : 'SMOKE OFF', 1.2); }
 }
-ov.addEventListener('click', e => { const a = e.target && e.target.dataset ? e.target.dataset.act : null; if (a === 'go') startGame(); if (a === 'resume') togglePause(); if (a === 'tod') setTOD((todI + 1) % 3); if (a === 'wx') setWX((wxI + 1) % 3); if (a === 'ghost') setGhostOn(!ghostOn); if (a === 'replay') startReplay(); });
+ov.addEventListener('click', e => { const a = e.target && e.target.dataset ? e.target.dataset.act : null; if (a === 'go') startGame(); if (a === 'resume') togglePause(); if (a === 'tod') setTOD((todI + 1) % 3); if (a === 'wx') setWX((wxI + 1) % 3); if (a === 'ghost') setGhostOn(!ghostOn); if (a === 'replay') startReplay(); if (a === 'diff') { setDiff((diffI + 1) % 3); pickGhost(); showBest(); } if (a === 'route') { setRoute(!routeRandom); pickGhost(); showBest(); } });
 cv.addEventListener('mousedown', () => { initAudio(); if (state === 'replay') { endReplay(); return; } if (state === 'play' && document.pointerLockElement !== cv && cv.requestPointerLock) cv.requestPointerLock(); });
 addEventListener('mousemove', e => {
   if (document.pointerLockElement === cv && state === 'play') { stick.x = clamp(stick.x + e.movementX * 0.0035, -1, 1); stick.y = clamp(stick.y + e.movementY * 0.0035, -1, 1); stick.active = 0.35; }
@@ -685,6 +748,13 @@ function levelGround() { if (P.f[1] < 0) P.f = V.norm([P.f[0], 0, P.f[2]]); P.u 
 const onRunway = p => Math.abs(p[0]) < RW.hx + 12 && Math.abs(p[2]) < RW.hz + 40;
 
 function update(dt) {
+  if (countdown > 0) {
+    countdown -= dt; const c = Math.ceil(countdown);
+    if (c !== cdLast && c >= 0) { cdLast = c; if (c > 0) tone(660, 0.18, 'square', 0.12); else { tone(1320, 0.45, 'square', 0.14); flash('GO! THROTTLE UP — TAKE OFF', 2.5); } }
+    if (keys.KeyR || keys.ShiftLeft || keys.ShiftRight || keys.Equal) P.thr = Math.min(1, P.thr + dt * 0.55);
+    if (keys.KeyF || keys.Minus) P.thr = Math.max(0, P.thr - dt * 0.55);
+    P.spd = 0; P.vs = 0; return;
+  }
   flightT += dt;
   recAcc += dt; if (recAcc >= 1 / 30) { recAcc -= 1 / 30; recFrame(); }
   let pi = 0, ri = 0, yi = 0;
@@ -700,10 +770,10 @@ function update(dt) {
   const auth = clamp((P.spd - 12) / 40, 0, 1), lift = clamp((P.spd - 26) / 20, 0, 1);
   let sink = 0, gustV = 0;
   if (!P.ground) {
-    const a2 = Math.max(auth, 0.2);
+    const a2 = Math.max(auth, 0.2) * D.auth;
     pitchBy(P.cp * 1.15 * a2 * dt); rollBy(P.cr * 2.1 * a2 * dt); yawBy(P.cy * 0.45 * a2 * dt);
     turnBy(-P.r[1] * 0.85 * a2 * dt);
-    const ti = WX[wxI].turb * (0.6 + 0.6 * clamp(1 - (P.pos[1] - Math.max(groundH(P.pos[0], P.pos[2]), 0)) / 400, 0, 1));
+    const ti = WX[wxI].turb * D.turb * (0.6 + 0.6 * clamp(1 - (P.pos[1] - Math.max(groundH(P.pos[0], P.pos[2]), 0)) / 400, 0, 1));
     pitchBy((vn(flightT * 1.6, 3.3) - 0.5) * 0.9 * ti * dt); rollBy((vn(flightT * 2.1, 7.7) - 0.5) * 1.7 * ti * dt);
     gustV = (vn(flightT * 1.2, 11.1) - 0.5) * 5 * ti;
     if (lift < 1 && P.f[1] > -0.7) pitchBy(-(1 - lift) * 0.7 * dt);
@@ -729,7 +799,7 @@ function update(dt) {
   } else if (P.pos[1] - GEAR <= floor) {
     if (gh < 0.5) { crash('Splashed into the sea'); return; }
     if (!onRw) { crash('Flew into the terrain'); return; }
-    if (P.u[1] > 0.93 && P.f[1] > -0.2 && P.vs > -7.5) {
+    if (P.u[1] > 0.93 && P.f[1] > -0.2 && P.vs > D.hard) {
       P.ground = true; P.pos[1] = gh + GEAR; P.touchVS = P.vs; levelGround(); tone(90, 0.25, 'triangle', 0.4);
       flash(P.vs > -2.5 ? 'BUTTER! SMOOTH TOUCHDOWN' : 'TOUCHDOWN', 2);
       if (P.vs < -4) P.spd *= 0.85;
@@ -742,13 +812,26 @@ function update(dt) {
     const da = V.dot(V.sub(prev, R.c), R.n), db = V.dot(V.sub(P.pos, R.c), R.n);
     if ((da < 0) !== (db < 0)) {
       const hit = V.lerp(prev, P.pos, da / (da - db));
-      if (V.len(V.sub(hit, R.c)) < RING_R) {
-        P.next++; timeLeft += RING_BONUS;
+      const off = V.len(V.sub(hit, R.c)) / D.ringR;
+      if (off < 1) {
+        P.next++; timeLeft += D.bonus;
+        let acc = rings[P.next - 1].valley === 'sea' ? '   SEA PASS' : '';
+        if (off < 0.25) { perfects++; accScore += 500; timeLeft += 3; acc = '   PERFECT +500 +3s'; tone(1760, 0.3, 'sine', 0.12, 0.16); }
+        else if (off < 0.5) { greats++; accScore += 250; acc = '   GREAT +250'; }
         tone(880, 0.25, 'sine', 0.18); tone(1320, 0.4, 'sine', 0.14, 0.08);
         let gs = ''; if (ghostOn && ghost && ghost.rings && ghost.rings[P.next - 1] !== undefined) { const d = flightT - ghost.rings[P.next - 1]; gs = `   GHOST ${d <= 0 ? '−' : '+'}${Math.abs(d).toFixed(1)}s`; }
         ringTimes.push(flightT);
-        flash((P.next >= NR ? 'ALL RINGS! LAND ON THE RUNWAY' : `RING ${P.next}/${NR}   +${RING_BONUS}s`) + gs, 2.4);
+        flash((P.next >= NR ? 'ALL RINGS! LAND ON THE RUNWAY' : `RING ${P.next}/${NR}  +${D.bonus}s`) + acc + gs, 2.4);
       }
+    }
+  }
+  for (const B of bonusRings) {
+    if (B.got) continue;
+    const da = V.dot(V.sub(prev, B.c), B.n), db = V.dot(V.sub(P.pos, B.c), B.n);
+    if ((da < 0) !== (db < 0) && V.len(V.sub(V.lerp(prev, P.pos, da / (da - db)), B.c)) < D.bonusR) {
+      B.got = true; bonusGot++; bonusScore += 750; timeLeft += D.gold;
+      tone(1175, 0.2, 'triangle', 0.16); tone(1568, 0.25, 'triangle', 0.14, 0.09); tone(2093, 0.45, 'triangle', 0.12, 0.18);
+      flash(`GOLD RING ${bonusGot}/${NB}   +${D.gold}s +750`, 2.4);
     }
   }
   timeLeft -= dt;
@@ -856,6 +939,10 @@ function render(t) {
     else o = { t: [0.85, 0.9, 1], e: 0.2 };
     o.s = 0.4;
     draw(M.ring, rings[i].M, o);
+  }
+  for (const B of bonusRings) if (!B.got) {
+    const k = 1 + 0.06 * Math.sin(t * 4 + B.c[0]);
+    draw(M.ring, mmul(B.M, basisM([k, 0, 0], [0, k, 0], [0, 0, 1], [0, 0, 0])), { t: [1.15, 0.82, 0.18], e: 0.6 + 0.3 * Math.sin(t * 5), s: 1.2 });
   }
   if (P.alive || crashT < 0.15) {
     const pm = basisM(P.r, P.u, P.f, P.pos);
@@ -1132,10 +1219,10 @@ function drawHUD(t) {
     const ahead = V.add(P.pos, V.mul([P.f[0] * P.spd, P.vs, P.f[2] * P.spd], 4));
     const warnY = cy + 60;
     if (!P.ground && P.spd < 30 && blink) txt('STALL', cx, warnY, 'center', 20, '#ff5a4a', 800);
-    else if (!P.ground && P.pos[1] > 0 && ahead[1] < Math.max(groundH(ahead[0], ahead[2]), 0) + 25 && !onRunway(ahead) && blink) { txt('PULL UP', cx, warnY, 'center', 20, '#ff5a4a', 800); if (beepT <= 0) { tone(700, 0.15, 'square', 0.06); beepT = 0.35; } }
+    else if (!P.ground && P.pos[1] > 0 && ahead[1] < (() => { const g = groundH(ahead[0], ahead[2]); return g < 0 ? 6 : g + 25; })() && !onRunway(ahead) && blink) { txt('PULL UP', cx, warnY, 'center', 20, '#ff5a4a', 800); if (beepT <= 0) { tone(700, 0.15, 'square', 0.06); beepT = 0.35; } }
     else if (Math.hypot(P.pos[0], P.pos[2]) > 7000 && blink) txt('TURN BACK — LEAVING THE ISLAND', cx, warnY, 'center', 16, GOLD, 800);
     // target guidance
-    const tg = P.next < NR ? { p: rings[P.next].c, l: `RING ${P.next + 1}` } : { p: [0, RW.y + 3, P.pos[2] < 0 ? -RW.hz : RW.hz], l: 'RUNWAY' };
+    const tg = P.next < NR ? { p: rings[P.next].c, l: `RING ${P.next + 1}${rings[P.next].valley === 'sea' ? ' · SEA' : rings[P.next].valley ? ' · VALLEY' : ''}` } : { p: [0, RW.y + 3, P.pos[2] < 0 ? -RW.hz : RW.hz], l: 'RUNWAY' };
     const dist = V.len(V.sub(tg.p, P.pos)), ds = dist < 1000 ? `${Math.round(dist)} m` : `${(dist / 1000).toFixed(1)} km`;
     const s = project(tg.p);
     hx.save(); hx.strokeStyle = GOLD; hx.fillStyle = GOLD; hx.shadowColor = 'rgba(255,190,80,0.9)'; hx.lineWidth = 2;
@@ -1159,8 +1246,16 @@ function drawHUD(t) {
   hx.save(); hx.shadowColor = low ? 'rgba(255,80,60,0.9)' : 'rgba(255,190,80,0.8)'; hx.shadowBlur = 10;
   txt('DEADLINE', cx - 8, tY, 'right', 12, low ? '#ff6a5a' : GOLD, 700);
   txt(fmtT(timeLeft), cx, tY, 'left', 24, low && (t * 2 % 1) < 0.5 ? '#ff6a5a' : '#fff3d6', 800);
-  txt(`RINGS ${P.next}/${NR}`, cx, tY + 24, 'center', 13, GOLD, 700);
+  txt(`RINGS ${P.next}/${NR}  ·  GOLD ${bonusGot}/${NB}`, cx, tY + 24, 'center', 13, GOLD, 700);
+  txt(`${D.name}${routeRandom ? ' · RANDOM ROUTE' : ''}  ·  SCORE ${score(false)}`, cx, tY + 42, 'center', 11, D.col, 700);
   hx.restore();
+  if (countdown > 0 && state === 'play') {
+    const c = Math.ceil(countdown), fr = countdown - Math.floor(countdown), sz = 90 + 50 * fr;
+    hx.save(); hx.globalAlpha = Math.min(1, 0.35 + fr); hx.shadowColor = 'rgba(255,190,80,0.95)'; hx.shadowBlur = 24;
+    txt(String(c), cx, H * 0.4, 'center', sz, '#fff3d6', 900);
+    hx.globalAlpha = 1; hx.shadowBlur = 8; txt('GET READY — SET THROTTLE (R)', cx, H * 0.4 + 80, 'center', 15, GOLD, 800);
+    hx.restore();
+  }
   // message
   if (msgT > 0) { hx.save(); hx.globalAlpha = Math.min(1, msgT); hx.shadowColor = 'rgba(255,200,90,0.9)'; hx.shadowBlur = 14; txt(msg, cx, H * (ck ? 0.25 : 0.27), 'center', Math.min(26, W / 22), '#fff3d6', 800); hx.restore(); }
   // minimap
@@ -1168,6 +1263,7 @@ function drawHUD(t) {
   hx.save(); hx.shadowBlur = 0; hx.globalAlpha = 0.92; hx.beginPath(); hx.rect(mx, my, ms, ms); hx.clip(); hx.drawImage(mini, mx, my, ms, ms);
   const mp = (x, z) => [mx + (x + MR) / (2 * MR) * ms, my + (MR - z) / (2 * MR) * ms];
   hx.strokeStyle = '#fff'; hx.lineWidth = 2; let a = mp(0, -RW.hz), b = mp(0, RW.hz); hx.beginPath(); hx.moveTo(a[0], a[1]); hx.lineTo(b[0], b[1]); hx.stroke();
+  bonusRings.forEach(B => { if (B.got) return; const p = mp(B.c[0], B.c[2]); hx.fillStyle = '#ffb21f'; hx.beginPath(); hx.moveTo(p[0], p[1] - 4); hx.lineTo(p[0] + 3, p[1]); hx.lineTo(p[0], p[1] + 4); hx.lineTo(p[0] - 3, p[1]); hx.closePath(); hx.fill(); });
   rings.forEach((rg, i) => { const p = mp(rg.c[0], rg.c[2]); hx.fillStyle = i < P.next ? '#5dff8a' : i === P.next ? GOLD : 'rgba(255,255,255,0.8)'; hx.beginPath(); hx.arc(p[0], p[1], i === P.next ? 4 : 2.5, 0, 7); hx.fill(); });
   const pp = mp(P.pos[0], P.pos[2]); hx.translate(pp[0], pp[1]); hx.rotate(hdg * RAD); hx.fillStyle = '#ff4a3a'; hx.beginPath(); hx.moveTo(0, -7); hx.lineTo(5, 5); hx.lineTo(0, 2); hx.lineTo(-5, 5); hx.closePath(); hx.fill();
   hx.restore(); hx.save(); hx.strokeStyle = 'rgba(255,210,130,0.7)'; hx.lineWidth = 1.5; hx.strokeRect(mx, my, ms, ms); txt('N', mx + ms / 2, my + 9, 'center', 10, '#fff'); hx.restore();
@@ -1207,5 +1303,5 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
-window.__skylark = { P, rings, startGame, groundH, setTOD, setWX, startReplay, endReplay, ghostPose, setGhost: g => { ghost = g; }, bolt: bt => { makeBolt(); boltT = bt; nextBolt = 99; }, get flightT() { return flightT; }, get rec() { return rec; }, get ghost() { return ghost; }, endGame, trail, clearTrail: () => { trail.length = 0; lastEmit = null; }, get state() { return state; } };
+window.__skylark = { P, rings, bonusRings, setDiff, setRoute, buildRoute, get countdown() { return countdown; }, set countdown(v) { countdown = v; }, get timeLeft() { return timeLeft; }, score, startGame, groundH, setTOD, setWX, startReplay, endReplay, ghostPose, setGhost: g => { ghost = g; }, bolt: bt => { makeBolt(); boltT = bt; nextBolt = 99; }, get flightT() { return flightT; }, get rec() { return rec; }, get ghost() { return ghost; }, endGame, trail, clearTrail: () => { trail.length = 0; lastEmit = null; }, get state() { return state; } };
 })();
